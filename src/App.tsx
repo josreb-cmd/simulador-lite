@@ -48,12 +48,22 @@ export default function App() {
     ? valorFinanciadoHab / mesesHab 
     : (valorFinanciadoHab * (iStress * Math.pow(1 + iStress, mesesHab))) / (Math.pow(1 + iStress, mesesHab) - 1);
 
+  // Cálculo do IMT — tabela oficial de escalões para Habitação Própria Permanente (HPP),
+  // Portugal Continental (OC AT 40129/2026). Base: valor do imóvel (ou VPT, se superior).
+  const calcularIMT = (valor: number): number => {
+    if (valor <= 106346) return 0;
+    if (valor <= 145470) return valor * 0.02 - 2126.92;
+    if (valor <= 198347) return valor * 0.05 - 6491.02;
+    if (valor <= 330539) return valor * 0.07 - 10457.96;
+    if (valor <= 660982) return valor * 0.08 - 13763.35;
+    if (valor <= 1150853) return valor * 0.06; // taxa única, sem parcela a abater
+    return valor * 0.075; // taxa única, sem parcela a abater
+  };
+
   // Impostos Habitação
   const isCreditoHab = valorFinanciadoHab * 0.006; // Imposto do Selo sobre o crédito — 0.6% para prazo > 5 anos
   const isCompra = valorImovel * 0.008; // Imposto do Selo sobre a aquisição — 0.8%
-  // Estimativa simplificada de IMT (Regime Geral simplificado para exemplo)
-  const imtEstimado = valorImovel > 101170 ? (valorImovel * 0.05) - 4000 : 0; 
-  const imtEstimadoFinal = Math.max(0, imtEstimado);
+  const imtEstimadoFinal = Math.max(0, calcularIMT(valorImovel));
   const totalImpostosHab = isCreditoHab + isCompra + imtEstimadoFinal;
   const totalNecessario = entradaMinima + totalImpostosHab;
 
