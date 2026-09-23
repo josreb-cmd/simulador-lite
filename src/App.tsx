@@ -5,48 +5,111 @@ import { useState } from 'react';
 // agrupa milhares quando o primeiro grupo tem 2+ dígitos (ex: 20000 e 28680 ficam bem,
 // mas 8680 ficaria "8680,00" sem separador). Esta versão agrupa sempre, de forma consistente.
 const formatEuro = (valor: number): string => {
+  if (!Number.isFinite(valor)) return '— €';
   const negativo = valor < 0;
   const [parteInteira, parteDecimal] = Math.abs(valor).toFixed(2).split('.');
   const inteiraComSeparador = parteInteira.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   return `${negativo ? '-' : ''}${inteiraComSeparador},${parteDecimal} €`;
 };
 
+// Um campo pode estar temporariamente vazio enquanto o utilizador edita (apagou tudo
+// antes de escrever um novo valor) — '' representa esse estado intermédio.
+type NumOrEmpty = number | '';
+
+// Converte um valor de estado (possivelmente vazio/NaN) num número seguro para cálculos.
+const safeNum = (val: NumOrEmpty): number => (val === '' || isNaN(val as number) ? 0 : Number(val));
+
+// Input numérico em modo texto: evita o bug nativo do <input type="number"> em que um
+// "0" inicial não é substituído mas sim antecedido pelos dígitos seguintes (ex: "0800000").
+// Também permite deixar o campo vazio enquanto o utilizador edita, em vez de forçar "0".
+function FormattedNumberInput({
+  value,
+  onChange,
+  className,
+}: {
+  value: NumOrEmpty;
+  onChange: (v: NumOrEmpty) => void;
+  className?: string;
+}) {
+  const displayValue = value === '' ? '' : String(value);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // mantém apenas dígitos e vírgula/ponto decimal (remove qualquer outro carácter)
+    const raw = e.target.value.replace(/[^\d.,]/g, '');
+    if (raw === '') {
+      onChange('');
+      return;
+    }
+    // remove zeros à esquerda indesejados (mas preserva "0" isolado e "0,x")
+    const semZerosEsquerda = raw.replace(/^0+(?=\d)/, '');
+    const normalizado = semZerosEsquerda.replace(',', '.');
+    const num = Number(normalizado);
+    onChange(isNaN(num) ? '' : num);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={displayValue}
+      onChange={handleChange}
+      className={className}
+    />
+  );
+}
+
 export default function App() {
   const [tipoCredito, setTipoCredito] = useState<'habitacao' | 'pessoal'>('habitacao');
 
   // Inputs Habitação
-  const [valorImovel, setValorImovel] = useState<number>(200000);
+  const [valorImovel, setValorImovel] = useState<NumOrEmpty>(200000);
   const [financiamentoPct, setFinanciamentoPct] = useState<number>(90);
-  const [prazoHabitacao, setPrazoHabitacao] = useState<number>(30); // anos
+  const [prazoHabitacao, setPrazoHabitacao] = useState<NumOrEmpty>(30); // anos
   const [regimeTaxaHab, setRegimeTaxaHab] = useState<'fixa' | 'variavel'>('fixa');
-  const [tanHabitacao, setTanHabitacao] = useState<number>(3.5); // % (usado no regime Fixa)
-  const [euribor, setEuribor] = useState<number>(2.5); // % (usado no regime Variável)
-  const [spread, setSpread] = useState<number>(1.0); // % (usado no regime Variável)
-  
+  const [tanHabitacao, setTanHabitacao] = useState<NumOrEmpty>(3.5); // % (usado no regime Fixa)
+  const [euribor, setEuribor] = useState<NumOrEmpty>(2.5); // % (usado no regime Variável)
+  const [spread, setSpread] = useState<NumOrEmpty>(1.0); // % (usado no regime Variável)
+
   // Inputs Pessoal
-  const [montantePessoal, setMontantePessoal] = useState<number>(10000);
-  const [prazoPessoal, setPrazoPessoal] = useState<number>(60); // meses
-  const [tanPessoal, setTanPessoal] = useState<number>(8.5); // %
+  const [montantePessoal, setMontantePessoal] = useState<NumOrEmpty>(10000);
+  const [prazoPessoal, setPrazoPessoal] = useState<NumOrEmpty>(60); // meses
+  const [tanPessoal, setTanPessoal] = useState<NumOrEmpty>(8.5); // %
 
   // Inputs Comuns
-  const [rendimentoLiquido, setRendimentoLiquido] = useState<number>(2500);
-  const [outrosEncargos, setOutrosEncargos] = useState<number>(0);
+  const [rendimentoLiquido, setRendimentoLiquido] = useState<NumOrEmpty>(2500);
+  const [outrosEncargos, setOutrosEncargos] = useState<NumOrEmpty>(0);
 
   // Cálculos Habitação
-  const tanHabitacaoEfetiva = regimeTaxaHab === 'variavel' ? euribor + spread : tanHabitacao;
-  const valorFinanciadoHab = valorImovel * (financiamentoPct / 100);
-  const entradaMinima = valorImovel - valorFinanciadoHab;
-  const mesesHab = prazoHabitacao * 12;
+  const valorImovelNum = safeNum(valorImovel);
+  const prazoHabitacaoNum = safeNum(prazoHabitacao);
+  const tanHabitacaoNum = safeNum(tanHabitacao);
+  const euriborNum = safeNum(euribor);
+  const spreadNum = safeNum(spread);
+  const montantePessoalNum = safeNum(montantePessoal);
+  const prazoPessoalNum = safeNum(prazoPessoal);
+  const tanPessoalNum = safeNum(tanPessoal);
+  const rendimentoLiquidoNum = safeNum(rendimentoLiquido);
+  const outrosEncargosNum = safeNum(outrosEncargos);
+
+  const tanHabitacaoEfetiva = regimeTaxaHab === 'variavel' ? euriborNum + spreadNum : tanHabitacaoNum;
+  const valorFinanciadoHab = valorImovelNum * (financiamentoPct / 100);
+  const entradaMinima = valorImovelNum - valorFinanciadoHab;
+  const mesesHab = prazoHabitacaoNum * 12;
   const iHab = (tanHabitacaoEfetiva / 100) / 12;
-  const prestacaoHab = iHab === 0 
-    ? valorFinanciadoHab / mesesHab 
-    : (valorFinanciadoHab * (iHab * Math.pow(1 + iHab, mesesHab))) / (Math.pow(1 + iHab, mesesHab) - 1);
+
+  // Cálculo da prestação (Sistema de Amortização Francês). Devolve 0 em vez de Infinity/NaN
+  // quando faltam dados (ex. prazo ainda não preenchido enquanto o utilizador edita).
+  const calcularPrestacao = (capital: number, taxaMensal: number, meses: number): number => {
+    if (capital <= 0 || meses <= 0) return 0;
+    if (taxaMensal === 0) return capital / meses;
+    return (capital * (taxaMensal * Math.pow(1 + taxaMensal, meses))) / (Math.pow(1 + taxaMensal, meses) - 1);
+  };
+
+  const prestacaoHab = calcularPrestacao(valorFinanciadoHab, iHab, mesesHab);
 
   // Teste de Stress BdP (+1.5% na TAN) — obrigatório apenas para taxa variável
   const iStress = ((tanHabitacaoEfetiva + 1.5) / 100) / 12;
-  const prestacaoStress = iStress === 0 
-    ? valorFinanciadoHab / mesesHab 
-    : (valorFinanciadoHab * (iStress * Math.pow(1 + iStress, mesesHab))) / (Math.pow(1 + iStress, mesesHab) - 1);
+  const prestacaoStress = calcularPrestacao(valorFinanciadoHab, iStress, mesesHab);
 
   // Cálculo do IMT — tabela oficial de escalões para Habitação Própria Permanente (HPP),
   // Portugal Continental (OC AT 40129/2026). Base: valor do imóvel (ou VPT, se superior).
@@ -62,25 +125,22 @@ export default function App() {
 
   // Impostos Habitação
   const isCreditoHab = valorFinanciadoHab * 0.006; // Imposto do Selo sobre o crédito — 0.6% para prazo > 5 anos
-  const isCompra = valorImovel * 0.008; // Imposto do Selo sobre a aquisição — 0.8%
-  const imtEstimadoFinal = Math.max(0, calcularIMT(valorImovel));
+  const isCompra = valorImovelNum * 0.008; // Imposto do Selo sobre a aquisição — 0.8%
+  const imtEstimadoFinal = Math.max(0, calcularIMT(valorImovelNum));
   const totalImpostosHab = isCreditoHab + isCompra + imtEstimadoFinal;
   const totalNecessario = entradaMinima + totalImpostosHab;
 
   // Cálculos Pessoal
-  const mesesPes = prazoPessoal;
-  const iPes = (tanPessoal / 100) / 12;
-  const prestacaoPes = iPes === 0 
-    ? montantePessoal / mesesPes 
-    : (montantePessoal * (iPes * Math.pow(1 + iPes, mesesPes))) / (Math.pow(1 + iPes, mesesPes) - 1);
-  const isCreditoPes = montantePessoal * 0.0176; // 1.76% para prazo > 5 anos
+  const iPes = (tanPessoalNum / 100) / 12;
+  const prestacaoPes = calcularPrestacao(montantePessoalNum, iPes, prazoPessoalNum);
+  const isCreditoPes = montantePessoalNum * 0.0176; // 1.76% para prazo > 5 anos
 
   // Taxa de Esforço (DSTI)
   const prestacaoAtiva = tipoCredito === 'habitacao' ? prestacaoHab : prestacaoPes;
-  const dstiAtual = ((prestacaoAtiva + outrosEncargos) / rendimentoLiquido) * 100;
-  
-  const prestacaoStressTotal = tipoCredito === 'habitacao' ? prestacaoStress + outrosEncargos : prestacaoAtiva + outrosEncargos;
-  const dstiStress = (prestacaoStressTotal / rendimentoLiquido) * 100;
+  const dstiAtual = rendimentoLiquidoNum > 0 ? ((prestacaoAtiva + outrosEncargosNum) / rendimentoLiquidoNum) * 100 : 0;
+
+  const prestacaoStressTotal = tipoCredito === 'habitacao' ? prestacaoStress + outrosEncargosNum : prestacaoAtiva + outrosEncargosNum;
+  const dstiStress = rendimentoLiquidoNum > 0 ? (prestacaoStressTotal / rendimentoLiquidoNum) * 100 : 0;
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-800">
@@ -118,10 +178,9 @@ export default function App() {
               <>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 mb-1">Valor do Imóvel (€)</label>
-                  <input 
-                    type="number" 
-                    value={valorImovel} 
-                    onChange={(e) => setValorImovel(Number(e.target.value))}
+                  <FormattedNumberInput
+                    value={valorImovel}
+                    onChange={setValorImovel}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
                 </div>
@@ -144,14 +203,12 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-medium text-slate-600 mb-1">Prazo (Anos)</label>
-                  <input 
-                    type="number" 
-                    min="5" 
-                    max="40" 
-                    value={prazoHabitacao} 
-                    onChange={(e) => setPrazoHabitacao(Number(e.target.value))}
+                  <FormattedNumberInput
+                    value={prazoHabitacao}
+                    onChange={setPrazoHabitacao}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
+                  <span className="text-xs text-slate-500">Entre 5 e 40 anos.</span>
                 </div>
 
                 <div>
@@ -177,11 +234,9 @@ export default function App() {
                 {regimeTaxaHab === 'fixa' ? (
                   <div>
                     <label className="block text-sm font-medium text-slate-600 mb-1">TAN Fixa (%)</label>
-                    <input 
-                      type="number" 
-                      step="0.1" 
-                      value={tanHabitacao} 
-                      onChange={(e) => setTanHabitacao(Number(e.target.value))}
+                    <FormattedNumberInput
+                      value={tanHabitacao}
+                      onChange={setTanHabitacao}
                       className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                     <span className="text-xs text-slate-500">Taxa fixa durante todo o prazo — sem obrigatoriedade de teste de esforço regulamentar.</span>
@@ -190,21 +245,17 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-slate-600 mb-1">Euribor (%)</label>
-                      <input 
-                        type="number" 
-                        step="0.01" 
-                        value={euribor} 
-                        onChange={(e) => setEuribor(Number(e.target.value))}
+                      <FormattedNumberInput
+                        value={euribor}
+                        onChange={setEuribor}
                         className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                       />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-slate-600 mb-1">Spread (%)</label>
-                      <input 
-                        type="number" 
-                        step="0.1" 
-                        value={spread} 
-                        onChange={(e) => setSpread(Number(e.target.value))}
+                      <FormattedNumberInput
+                        value={spread}
+                        onChange={setSpread}
                         className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                       />
                     </div>
@@ -218,10 +269,9 @@ export default function App() {
               <>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 mb-1">Montante do Crédito (€)</label>
-                  <input 
-                    type="number" 
-                    value={montantePessoal} 
-                    onChange={(e) => setMontantePessoal(Number(e.target.value))}
+                  <FormattedNumberInput
+                    value={montantePessoal}
+                    onChange={setMontantePessoal}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
                 </div>
@@ -229,22 +279,17 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-slate-600 mb-1">Prazo (Meses)</label>
-                    <input 
-                      type="number" 
-                      min="12" 
-                      max="84" 
-                      value={prazoPessoal} 
-                      onChange={(e) => setPrazoPessoal(Number(e.target.value))}
+                    <FormattedNumberInput
+                      value={prazoPessoal}
+                      onChange={setPrazoPessoal}
                       className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-600 mb-1">TAN (%)</label>
-                    <input 
-                      type="number" 
-                      step="0.1" 
-                      value={tanPessoal} 
-                      onChange={(e) => setTanPessoal(Number(e.target.value))}
+                    <FormattedNumberInput
+                      value={tanPessoal}
+                      onChange={setTanPessoal}
                       className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                   </div>
@@ -255,20 +300,18 @@ export default function App() {
             <div className="border-t pt-4 space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-1">Rendimento Líquido Mensal Familiar (€)</label>
-                <input 
-                  type="number" 
-                  value={rendimentoLiquido} 
-                  onChange={(e) => setRendimentoLiquido(Number(e.target.value))}
+                <FormattedNumberInput
+                  value={rendimentoLiquido}
+                  onChange={setRendimentoLiquido}
                   className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-1">Outros Créditos / Encargos Atuais (€/mês)</label>
-                <input 
-                  type="number" 
-                  value={outrosEncargos} 
-                  onChange={(e) => setOutrosEncargos(Number(e.target.value))}
+                <FormattedNumberInput
+                  value={outrosEncargos}
+                  onChange={setOutrosEncargos}
                   className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
