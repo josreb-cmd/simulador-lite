@@ -1,4 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  TABELAS_FALLBACK,
+  TABELAS_URL,
+  calcSeloConsumo,
+  calcSeloCredito,
+  calcularIMT,
+  calcularSeloAquisicao,
+  formatTaxaPct,
+  getIsencaoJovem,
+  mergeTabelas,
+} from './impostos';
+import type { TabelasFiscais, TipoImovel } from './impostos';
 
 // Formata valores monetários com separador de milhares em formato PT-PT (ex: 8.680,00 €)
 // Nota: usa formatação manual em vez de toLocaleString('pt-PT'), porque essa locale só
@@ -70,6 +82,11 @@ export default function App() {
   const [euribor, setEuribor] = useState<NumOrEmpty>(2.5); // % (usado no regime Variável)
   const [spread, setSpread] = useState<NumOrEmpty>(1.0); // % (usado no regime Variável)
 
+  // Tipo de imóvel e Benefício Jovem (DL 48-A/2024)
+  const [tipoImovel, setTipoImovel] = useState<TipoImovel>('hpp');
+  const [isJovem, setIsJovem] = useState<boolean>(false);
+  const [idadeMutuario, setIdadeMutuario] = useState<NumOrEmpty>(30);
+
   // Inputs Pessoal
   const [montantePessoal, setMontantePessoal] = useState<NumOrEmpty>(10000);
   const [prazoPessoal, setPrazoPessoal] = useState<NumOrEmpty>(60); // meses
@@ -78,6 +95,24 @@ export default function App() {
   // Inputs Comuns
   const [rendimentoLiquido, setRendimentoLiquido] = useState<NumOrEmpty>(2500);
   const [outrosEncargos, setOutrosEncargos] = useState<NumOrEmpty>(0);
+
+  // Tabelas fiscais: começa no fallback, substitui pelo JSON remoto se válido
+  const [tabelas, setTabelas] = useState<TabelasFiscais>(TABELAS_FALLBACK);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(TABELAS_URL, { signal: controller.signal })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: unknown) => setTabelas(mergeTabelas(data)))
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.warn('Tabelas fiscais remotas indisponíveis, a usar fallback local:', err);
+      });
+    return () => controller.abort();
+  }, []);
 
   // Cálculos Habitação
   const valorImovelNum = safeNum(valorImovel);
@@ -111,29 +146,28 @@ export default function App() {
   const iStress = ((tanHabitacaoEfetiva + 1.5) / 100) / 12;
   const prestacaoStress = calcularPrestacao(valorFinanciadoHab, iStress, mesesHab);
 
-  // Cálculo do IMT — tabela oficial de escalões para Habitação Própria Permanente (HPP),
-  // Portugal Continental (OC AT 40129/2026). Base: valor do imóvel (ou VPT, se superior).
-  const calcularIMT = (valor: number): number => {
-    if (valor <= 106346) return 0;
-    if (valor <= 145470) return valor * 0.02 - 2126.92;
-    if (valor <= 198347) return valor * 0.05 - 6491.02;
-    if (valor <= 330539) return valor * 0.07 - 10457.96;
-    if (valor <= 660982) return valor * 0.08 - 13763.35;
-    if (valor <= 1150853) return valor * 0.06; // taxa única, sem parcela a abater
-    return valor * 0.075; // taxa única, sem parcela a abater
-  };
+  // Benefício Jovem: só conta com idade elegível; a isenção em si só se aplica a HPP
+  const idadeMaximaJovem = tabelas.beneficio_jovem.idade_maxima;
+  const idadeMutuarioNum = safeNum(idadeMutuario);
+  const isJovemElegivel = idadeMutuarioNum > 0 && idadeMutuarioNum <= idadeMaximaJovem;
+  const beneficioJovemAtivo = isJovem && isJovemElegivel;
+  const isencaoJovem = getIsencaoJovem(valorImovelNum, tipoImovel, beneficioJovemAtivo, tabelas.beneficio_jovem);
+  const isencaoJovemLabel =
+    isencaoJovem === 'total' ? ' (isento — Jovem)' : isencaoJovem === 'parcial' ? ' (isenção parcial — Jovem)' : '';
 
-  // Impostos Habitação
-  const isCreditoHab = valorFinanciadoHab * 0.006; // Imposto do Selo sobre o crédito — 0.6% para prazo > 5 anos
-  const isCompra = valorImovelNum * 0.008; // Imposto do Selo sobre a aquisição — 0.8%
-  const imtEstimadoFinal = Math.max(0, calcularIMT(valorImovelNum));
+  // Impostos Habitação — IMT pela tabela do tipo de imóvel (OC AT 40129/2026)
+  const seloCreditoHab = calcSeloCredito(valorFinanciadoHab, prazoHabitacaoNum, tabelas.selo_credito.geral); // Verba 17.1 — nunca isento por Jovem
+  const isCreditoHab = seloCreditoHab.valor;
+  const isCompra = calcularSeloAquisicao(valorImovelNum, tipoImovel, beneficioJovemAtivo, tabelas); // Verba 1.1
+  const imtEstimadoFinal = Math.max(0, calcularIMT(valorImovelNum, tipoImovel, beneficioJovemAtivo, tabelas));
   const totalImpostosHab = isCreditoHab + isCompra + imtEstimadoFinal;
   const totalNecessario = entradaMinima + totalImpostosHab;
 
   // Cálculos Pessoal
   const iPes = (tanPessoalNum / 100) / 12;
   const prestacaoPes = calcularPrestacao(montantePessoalNum, iPes, prazoPessoalNum);
-  const isCreditoPes = montantePessoalNum * 0.0176; // 1.76% para prazo > 5 anos
+  const seloCreditoPes = calcSeloConsumo(montantePessoalNum, prazoPessoalNum, tabelas.selo_credito.consumo); // Verba 17.2
+  const isCreditoPes = seloCreditoPes.valor;
 
   // Taxa de Esforço (DSTI)
   const prestacaoAtiva = tipoCredito === 'habitacao' ? prestacaoHab : prestacaoPes;
@@ -183,6 +217,46 @@ export default function App() {
                     onChange={setValorImovel}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">Tipo de Imóvel</label>
+                  <select
+                    value={tipoImovel}
+                    onChange={(e) => setTipoImovel(e.target.value as TipoImovel)}
+                    className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                  >
+                    <option value="hpp">Habitação Própria Permanente (HPP)</option>
+                    <option value="secundaria">Habitação Secundária</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1">Idade do Mutuário</label>
+                  <FormattedNumberInput
+                    value={idadeMutuario}
+                    onChange={setIdadeMutuario}
+                    className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className={`flex items-center gap-2 text-sm font-medium ${isJovemElegivel ? 'text-slate-600' : 'text-slate-400'}`}>
+                    <input
+                      type="checkbox"
+                      checked={beneficioJovemAtivo}
+                      disabled={!isJovemElegivel}
+                      onChange={(e) => setIsJovem(e.target.checked)}
+                      className="w-4 h-4 accent-blue-600"
+                    />
+                    Benefício Jovem (IMT e Selo na aquisição)
+                  </label>
+                  {idadeMutuarioNum > idadeMaximaJovem && (
+                    <span className="text-xs text-amber-600">Só disponível até aos {idadeMaximaJovem} anos.</span>
+                  )}
+                  {beneficioJovemAtivo && tipoImovel === 'secundaria' && (
+                    <span className="text-xs text-amber-600">Não se aplica a Habitação Secundária.</span>
+                  )}
                 </div>
 
                 <div>
@@ -340,15 +414,15 @@ export default function App() {
                       <span className="font-medium text-slate-900">{formatEuro(entradaMinima)}</span>
                     </div>
                     <div className="flex justify-between text-sm text-slate-600">
-                      <span>IMT (Imposto Municipal s/ Transmissões):</span>
+                      <span>IMT (Imposto Municipal s/ Transmissões){isencaoJovemLabel}:</span>
                       <span className="font-medium text-slate-900">{formatEuro(imtEstimadoFinal)}</span>
                     </div>
                     <div className="flex justify-between text-sm text-slate-600">
-                      <span>Imposto de Selo (Aquisição, 0,8%):</span>
+                      <span>Imposto de Selo (Aquisição, {formatTaxaPct(tabelas.selo_aquisicao_imovel.taxa)}){isencaoJovemLabel}:</span>
                       <span className="font-medium text-slate-900">{formatEuro(isCompra)}</span>
                     </div>
                     <div className="flex justify-between text-sm text-slate-600">
-                      <span>Imposto de Selo (Crédito, 0,6%):</span>
+                      <span>Imposto de Selo (Crédito, {formatTaxaPct(seloCreditoHab.taxa)}):</span>
                       <span className="font-medium text-slate-900">{formatEuro(isCreditoHab)}</span>
                     </div>
                     <div className="border-t pt-2 flex justify-between text-sm font-bold text-slate-900">
@@ -362,7 +436,7 @@ export default function App() {
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-2">
                     <span className="text-sm font-semibold text-slate-700 block">Impostos Iniciais</span>
                     <div className="flex justify-between text-sm text-slate-600">
-                      <span>Imposto do Selo (Utilização 1,76%):</span>
+                      <span>Imposto do Selo (Utilização {formatTaxaPct(seloCreditoPes.taxa)}):</span>
                       <span className="font-medium text-slate-900">{formatEuro(isCreditoPes)}</span>
                     </div>
                   </div>
