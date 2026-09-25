@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   TABELAS_FALLBACK,
   TABELAS_URL,
@@ -31,36 +31,133 @@ type NumOrEmpty = number | '';
 // Converte um valor de estado (possivelmente vazio/NaN) num número seguro para cálculos.
 const safeNum = (val: NumOrEmpty): number => (val === '' || isNaN(val as number) ? 0 : Number(val));
 
+// Tipo de campo numérico:
+// - 'percentagem': vírgula ou ponto como separador decimal (ex: "3,05" ou "3.75")
+// - 'euro': ponto é separador de milhares e vírgula é separador decimal (ex: "200.000,50")
+type TipoCampoNumerico = 'percentagem' | 'euro';
+
+// Converte texto limpo (separador decimal já normalizado para ".") em número; "." isolado vale 0.
+const parseDecimal = (texto: string): NumOrEmpty => {
+  if (texto === '') return '';
+  const num = Number(`0${texto}`);
+  return isNaN(num) ? '' : num;
+};
+
+// Percentagem: só dígitos e um único separador decimal (vírgula ou ponto, mantém o que o
+// utilizador escreveu); remove zeros à esquerda (mas preserva "0" isolado e "0,x").
+const limparPercentagem = (input: string): string => {
+  const raw = input.replace(/[^\d.,]/g, '');
+  const idxSeparador = raw.search(/[.,]/);
+  if (idxSeparador === -1) return raw.replace(/^0+(?=\d)/, '');
+  const inteira = raw.slice(0, idxSeparador).replace(/^0+(?=\d)/, '');
+  const decimal = raw.slice(idxSeparador + 1).replace(/[.,]/g, '');
+  return `${inteira}${raw[idxSeparador]}${decimal}`;
+};
+
+const agruparMilhares = (inteira: string): string => inteira.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+// Euro: reagrupa a parte inteira com pontos de milhares a cada tecla (ex: "10000" → "10.000")
+// e aceita uma única vírgula decimal; remove zeros à esquerda (mas preserva "0" isolado e "0,x").
+const limparEuro = (input: string): string => {
+  const raw = input.replace(/[^\d.,]/g, '');
+  const idxVirgula = raw.indexOf(',');
+  const inteiraRaw = idxVirgula === -1 ? raw : raw.slice(0, idxVirgula);
+  const inteira = agruparMilhares(inteiraRaw.replace(/\./g, '').replace(/^0+(?=\d)/, ''));
+  if (idxVirgula === -1) return inteira;
+  const decimal = raw.slice(idxVirgula + 1).replace(/[.,]/g, '');
+  return `${inteira},${decimal}`;
+};
+
+// Posição no texto limpo logo a seguir ao n-ésimo carácter significativo (dígito ou
+// separador decimal). Permite manter o cursor no mesmo sítio depois de reformatar.
+const posicaoAposSignificativos = (texto: string, n: number, significativo: RegExp): number => {
+  if (n <= 0) return 0;
+  let contados = 0;
+  for (let i = 0; i < texto.length; i++) {
+    if (significativo.test(texto[i])) contados++;
+    if (contados === n) return i + 1;
+  }
+  return texto.length;
+};
+
+const contarSignificativos = (texto: string, significativo: RegExp): number =>
+  [...texto].filter((ch) => significativo.test(ch)).length;
+
+const CAMPO_NUMERICO: Record<
+  TipoCampoNumerico,
+  {
+    limpar: (input: string) => string;
+    parse: (texto: string) => NumOrEmpty;
+    formatar: (value: number) => string;
+    significativo: RegExp; // caracteres que contam para a posição do cursor (os pontos de milhares não)
+  }
+> = {
+  percentagem: {
+    significativo: /[\d.,]/,
+    limpar: limparPercentagem,
+    parse: (texto) => parseDecimal(texto.replace(',', '.')),
+    formatar: (value) => String(value).replace('.', ','),
+  },
+  euro: {
+    significativo: /[\d,]/,
+    limpar: limparEuro,
+    parse: (texto) => parseDecimal(texto.replace(/\./g, '').replace(',', '.')),
+    formatar: (value) => {
+      const [inteira, decimal] = String(value).split('.');
+      return decimal ? `${agruparMilhares(inteira)},${decimal}` : agruparMilhares(inteira);
+    },
+  },
+};
+
 // Input numérico em modo texto: evita o bug nativo do <input type="number"> em que um
 // "0" inicial não é substituído mas sim antecedido pelos dígitos seguintes (ex: "0800000").
 // Também permite deixar o campo vazio enquanto o utilizador edita, em vez de forçar "0".
+// Guarda o texto escrito para não perder estados intermédios como "3," ou "3,0" (que como
+// número seriam só 3). Os separadores aceites dependem do `tipo` (ver TipoCampoNumerico).
 function FormattedNumberInput({
   value,
   onChange,
+  tipo,
   className,
 }: {
   value: NumOrEmpty;
   onChange: (v: NumOrEmpty) => void;
+  tipo: TipoCampoNumerico;
   className?: string;
 }) {
-  const displayValue = value === '' ? '' : String(value);
+  const campo = CAMPO_NUMERICO[tipo];
+  const formatarValor = (v: NumOrEmpty): string => (v === '' ? '' : campo.formatar(v));
+  const [texto, setTexto] = useState<string>(() => formatarValor(value));
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Posição do cursor a repor depois do próximo render (a reformatação move-o para o fim)
+  const cursorPendente = useRef<number | null>(null);
+
+  // Se o valor mudar por fora (não pelo que foi escrito), mostra o valor novo
+  const displayValue = campo.parse(texto) === value ? texto : formatarValor(value);
+
+  useLayoutEffect(() => {
+    const posicao = cursorPendente.current;
+    if (posicao === null || !inputRef.current) return;
+    inputRef.current.setSelectionRange(posicao, posicao);
+    cursorPendente.current = null;
+  });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // mantém apenas dígitos e vírgula/ponto decimal (remove qualquer outro carácter)
-    const raw = e.target.value.replace(/[^\d.,]/g, '');
-    if (raw === '') {
-      onChange('');
-      return;
-    }
-    // remove zeros à esquerda indesejados (mas preserva "0" isolado e "0,x")
-    const semZerosEsquerda = raw.replace(/^0+(?=\d)/, '');
-    const normalizado = semZerosEsquerda.replace(',', '.');
-    const num = Number(normalizado);
-    onChange(isNaN(num) ? '' : num);
+    const { value: escrito, selectionStart } = e.target;
+    const antesDoCursor = escrito.slice(0, selectionStart ?? escrito.length);
+    const limpo = campo.limpar(escrito);
+    cursorPendente.current = posicaoAposSignificativos(
+      limpo,
+      contarSignificativos(antesDoCursor, campo.significativo),
+      campo.significativo,
+    );
+    setTexto(limpo);
+    onChange(campo.parse(limpo));
   };
 
   return (
     <input
+      ref={inputRef}
       type="text"
       inputMode="decimal"
       value={displayValue}
@@ -214,6 +311,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-600 mb-1">Valor do Imóvel (€)</label>
                   <FormattedNumberInput
                     value={valorImovel}
+                    tipo="euro"
                     onChange={setValorImovel}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
@@ -235,6 +333,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-600 mb-1">Idade do Mutuário</label>
                   <FormattedNumberInput
                     value={idadeMutuario}
+                    tipo="percentagem"
                     onChange={setIdadeMutuario}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
@@ -279,6 +378,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-600 mb-1">Prazo (Anos)</label>
                   <FormattedNumberInput
                     value={prazoHabitacao}
+                    tipo="percentagem"
                     onChange={setPrazoHabitacao}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
@@ -310,6 +410,7 @@ export default function App() {
                     <label className="block text-sm font-medium text-slate-600 mb-1">TAN Fixa (%)</label>
                     <FormattedNumberInput
                       value={tanHabitacao}
+                      tipo="percentagem"
                       onChange={setTanHabitacao}
                       className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
@@ -321,6 +422,7 @@ export default function App() {
                       <label className="block text-sm font-medium text-slate-600 mb-1">Euribor (%)</label>
                       <FormattedNumberInput
                         value={euribor}
+                        tipo="percentagem"
                         onChange={setEuribor}
                         className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                       />
@@ -329,6 +431,7 @@ export default function App() {
                       <label className="block text-sm font-medium text-slate-600 mb-1">Spread (%)</label>
                       <FormattedNumberInput
                         value={spread}
+                        tipo="percentagem"
                         onChange={setSpread}
                         className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                       />
@@ -345,6 +448,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-slate-600 mb-1">Montante do Crédito (€)</label>
                   <FormattedNumberInput
                     value={montantePessoal}
+                    tipo="euro"
                     onChange={setMontantePessoal}
                     className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
@@ -355,6 +459,7 @@ export default function App() {
                     <label className="block text-sm font-medium text-slate-600 mb-1">Prazo (Meses)</label>
                     <FormattedNumberInput
                       value={prazoPessoal}
+                      tipo="percentagem"
                       onChange={setPrazoPessoal}
                       className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
@@ -363,6 +468,7 @@ export default function App() {
                     <label className="block text-sm font-medium text-slate-600 mb-1">TAN (%)</label>
                     <FormattedNumberInput
                       value={tanPessoal}
+                      tipo="percentagem"
                       onChange={setTanPessoal}
                       className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
@@ -376,6 +482,7 @@ export default function App() {
                 <label className="block text-sm font-medium text-slate-600 mb-1">Rendimento Líquido Mensal Familiar (€)</label>
                 <FormattedNumberInput
                   value={rendimentoLiquido}
+                  tipo="euro"
                   onChange={setRendimentoLiquido}
                   className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
@@ -385,6 +492,7 @@ export default function App() {
                 <label className="block text-sm font-medium text-slate-600 mb-1">Outros Créditos / Encargos Atuais (€/mês)</label>
                 <FormattedNumberInput
                   value={outrosEncargos}
+                  tipo="euro"
                   onChange={setOutrosEncargos}
                   className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
