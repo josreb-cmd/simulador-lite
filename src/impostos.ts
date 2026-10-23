@@ -37,7 +37,7 @@ export interface TabelasFiscais {
   beneficio_jovem: { idade_maxima: number; limite_isencao_total: number; limite_isencao_parcial: number };
 }
 
-// Espelho de impostos.json v2026.1 (OC AT 40129/2026 + CIS/TGIS Verbas 1.1, 17.1, 17.2)
+// Espelho de impostos.json v2026.2 (OC AT 40129/2026 + CIS/TGIS Verbas 1.1, 17.1, 17.2)
 export const TABELAS_FALLBACK: TabelasFiscais = {
   imt: {
     hpp: [
@@ -54,7 +54,7 @@ export const TABELAS_FALLBACK: TabelasFiscais = {
       { ate: 145470, taxa: 0.02, abater: 1063.46 },
       { ate: 198347, taxa: 0.05, abater: 5427.56 },
       { ate: 330539, taxa: 0.07, abater: 9394.5 },
-      { ate: 660982, taxa: 0.08, abater: 12699.89 },
+      { ate: 633931, taxa: 0.08, abater: 12699.89 },
       { ate: 1150853, taxa: 0.06, abater: 0, taxa_unica: true },
       { ate: null, taxa: 0.075, abater: 0, taxa_unica: true },
     ],
